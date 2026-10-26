@@ -49,6 +49,29 @@ It prints the URL, including the secret token:
 [*] saving into /home/user/file-transfer/uploads
 ```
 
+The LAN address comes first. If the machine has more than one local address
+--- Docker, a second NIC --- the others are listed below it as `or ...`, and
+all of them are in the certificate, so any of them works.
+
+A VPN does not change the URL: the addresses are read off the interfaces, not
+from whichever route happens to win, so a tunnel address never pushes out the
+LAN one. Tunnel addresses are not served at all, and stay out of the
+certificate, because they come and go and every change to the certificate
+means reinstalling it on the phone:
+
+```
+[*] https://192.168.35.9:8443/Xk3...Qw/
+[*] not serving tunnel 10.99.0.2 (keeps the cert stable; FILE_TRANSFER_HOST overrides)
+```
+
+The exception is a machine with nothing else: if every address is a tunnel,
+the tunnel is served after all, so there is still a URL. To pick the address
+by hand --- including a tunnel that was skipped:
+
+```sh
+FILE_TRANSFER_HOST=192.168.35.9 python recv.py
+```
+
 A QR code of the URL is drawn above it: scan it with the iPhone camera instead of typing the token. (Needs the `qrcode` package; without it only the URL is printed.)
 
 Open exactly that URL. Anything without the token returns 404, for uploads and downloads alike. The token is regenerated on every start, so old URLs and bookmarks stop working after a restart; scan the new QR code. `token.txt` just holds the current one.
@@ -64,9 +87,9 @@ Open exactly that URL. Anything without the token returns 404, for uploads and d
 
 `recv.py` creates the certificate automatically if it is missing, so running `gen_cert.py` by hand is optional.
 
-It is **not** regenerated on every start: iOS trusts one specific certificate, so that would force a reinstall on the phone each time. A new one is made only when the cert is missing, expires within 30 days, or no longer contains this machine's LAN IP. A warning is printed when that happens.
+It is **not** regenerated on every start: iOS trusts one specific certificate, so that would force a reinstall on the phone each time. A new one is made only when the cert is missing, expires within 30 days, or no longer covers one of this machine's LAN addresses. Connecting or dropping a VPN does **not** count: tunnel addresses are deliberately left out, so the certificate on the phone keeps working either way. A warning is printed when a new one is made.
 
-The LAN IP goes into the certificate's `subjectAltName`, which iOS requires. To add a hostname or force a new cert:
+Every served address goes into the certificate's `subjectAltName`, which iOS requires. To add a hostname or force a new cert:
 
 ```sh
 python gen_cert.py --force my-pc.local
@@ -109,4 +132,4 @@ Settings → General → VPN & Device Management → install, then
 Settings → General → About → Certificate Trust Settings → enable full trust.
 
 **Cannot reach the page**
-Check the IP printed on startup, the firewall, and that both devices are on the same subnet.
+Check the IP printed on startup, the firewall, and that both devices are on the same subnet. If the machine has several addresses, try the other `or ...` URLs, or pin the right one with `FILE_TRANSFER_HOST`. To reach the server *over* a VPN, pass its tunnel address that way --- it is skipped by default, and doing so rewrites the certificate. A VPN on the *iPhone* can also route the request away from the LAN --- turn it off there, or exclude the subnet.

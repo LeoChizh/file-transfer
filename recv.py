@@ -8,7 +8,7 @@ import sys
 import urllib.parse
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
-from gen_cert import ensure_cert, lan_ip
+from gen_cert import HOST_ENV, ensure_cert, lan_ips, tunnel_ips
 from multipart import parse_form_data
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -191,10 +191,23 @@ def main():
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     write_token()
-    url = f"https://{lan_ip()}:{PORT}/{TOKEN}/"
-    print_qr(url)
-    print(f"[*] {url}")
-    print(f"[*] saving into {UPLOAD_DIR}")
+    # Listening on every interface; these are the ways in, LAN first. A VPN
+    # must not decide the URL, so the addresses come from the interface list
+    # rather than from whichever route happens to win.
+    ips = lan_ips() or ["<this-machine-ip>"]
+    urls = [f"https://{ip}:{PORT}/{TOKEN}/" for ip in ips]
+    print_qr(urls[0])
+    print(f"[*] {urls[0]}")
+    for url in urls[1:]:
+        print(f"[*] or {url}")
+    if len(urls) > 1:
+        print(f"[*] wrong one first? set {HOST_ENV}=<ip>")
+    skipped = tunnel_ips()
+    if skipped:
+        print(f"[*] not serving tunnel {', '.join(skipped)}"
+              f" (keeps the cert stable; {HOST_ENV} overrides)")
+    print(f"[*] saving into {UPLOAD_DIR}", flush=True)  # the URL is the
+    # first thing anyone waits for, so do not leave it in a pipe buffer
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
