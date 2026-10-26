@@ -1,0 +1,15 @@
+# python
+.venv/
+__pycache__/
+*.pyc
+
+# secrets / generated
+cert.pem
+key.pem
+
+# uploaded files
+uploads/*
+!uploads/.gitkeep
+
+# misc
+.DS_Store
