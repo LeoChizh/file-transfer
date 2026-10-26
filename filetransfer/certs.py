@@ -14,10 +14,7 @@ So there are two certificates, the way mkcert does it:
             phone's trust settings.
   cert.pem  the server certificate, signed by the CA. Regenerated whenever
             the names change, which costs the phone nothing.
-
-Usage: python -m filetransfer.certs [--force] [name ...]
 """
-import argparse
 import datetime
 import ipaddress
 import os
@@ -27,8 +24,6 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
-
-from .mdns import default_name
 
 CA_CERT = "ca.pem"
 CA_KEY = "ca-key.pem"
@@ -89,14 +84,14 @@ def _expiring(cert):
     return cert.not_valid_after_utc - _now() < RENEW_BEFORE
 
 
-def ensure_ca(ca_cert=CA_CERT, ca_key=CA_KEY, force=False):
+def ensure_ca(ca_cert=CA_CERT, ca_key=CA_KEY):
     """Create the authority if needed. Returns True if it was (re)made.
 
     True means the phone has to install the new ca.pem; that is the only
     thing in here the phone ever cares about, so it should stay False for
     years at a time.
     """
-    if not force and os.path.exists(ca_cert) and os.path.exists(ca_key):
+    if os.path.exists(ca_cert) and os.path.exists(ca_key):
         try:
             cert, _ = _load(ca_cert, ca_key)
             if not _expiring(cert):
@@ -144,8 +139,6 @@ def _sans(names):
         try:
             out.append(x509.IPAddress(ipaddress.ip_address(n)))
         except ValueError:
-            if n.startswith("<"):
-                continue  # the "no address found" placeholder
             out.append(x509.DNSName(n))
     return out
 
@@ -168,14 +161,10 @@ def _needs_regen(cert_path, key_path, names):
         cert, _ = _load(cert_path, key_path)
     except (ValueError, TypeError):
         return True
-    if _expiring(cert):
-        return True
-    if not names:
-        return False  # nothing to check against; keep what we have
-    return not _covers(cert, names)
+    return _expiring(cert) or not _covers(cert, names)
 
 
-def ensure_cert(cert_path=CERT, key_path=KEY, names=(), force=False,
+def ensure_cert(cert_path=CERT, key_path=KEY, names=(),
                 ca_cert=CA_CERT, ca_key=CA_KEY):
     """Make sure a CA and a server certificate exist. Returns (ca, leaf).
 
@@ -187,9 +176,9 @@ def ensure_cert(cert_path=CERT, key_path=KEY, names=(), force=False,
     cheap, the CA being what the phone trusts, so this never has to leave
     anything out.
     """
-    new_ca = ensure_ca(ca_cert, ca_key, force=force)
+    new_ca = ensure_ca(ca_cert, ca_key)
     wanted = [*names, "127.0.0.1", "localhost"]
-    if not (force or new_ca or _needs_regen(cert_path, key_path, names)):
+    if not (new_ca or _needs_regen(cert_path, key_path, names)):
         return new_ca, False
 
     ca, ca_signing_key = _load(ca_cert, ca_key)
@@ -228,30 +217,3 @@ def ensure_cert(cert_path=CERT, key_path=KEY, names=(), force=False,
     print(f"[*] signed {cert_path} for:",
           ", ".join(str(n) for n in dict.fromkeys(wanted)), flush=True)
     return new_ca, True
-
-
-def main(argv=None):
-    p = argparse.ArgumentParser(
-        prog="python -m filetransfer.certs",
-        description="Create the local CA and a server certificate.")
-    p.add_argument("names", nargs="*", metavar="NAME",
-                   help="name to put in the certificate (default: this"
-                        " machine's .local name)")
-    p.add_argument("--force", action="store_true",
-                   help="replace certificates that are still valid")
-    p.add_argument("--cert", default=CERT)
-    p.add_argument("--key", default=KEY)
-    p.add_argument("--ca", default=CA_CERT)
-    p.add_argument("--ca-key", dest="ca_key", default=CA_KEY)
-    args = p.parse_args(argv)
-    names = args.names or [default_name()]
-    new_ca, new_leaf = ensure_cert(args.cert, args.key, names=names,
-                                   force=args.force, ca_cert=args.ca,
-                                   ca_key=args.ca_key)
-    if not (new_ca or new_leaf):
-        print(f"{args.ca} and {args.cert} are up to date"
-              " (use --force to replace)")
-
-
-if __name__ == "__main__":
-    main()

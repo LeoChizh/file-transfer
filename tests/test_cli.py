@@ -1,6 +1,4 @@
 import io
-import os
-import tempfile
 import unittest
 from unittest import mock
 
@@ -13,17 +11,11 @@ class ParseArgsTest(unittest.TestCase):
         args = cli.parse_args([])
         self.assertEqual(args.port, DEFAULT_PORT)
         self.assertEqual(args.upload_dir, "uploads")
-        self.assertIsNone(args.name)
-        self.assertTrue(args.publish)
-        self.assertEqual(args.ca, "ca.pem")
-        self.assertEqual(args.ca_key, "ca-key.pem")
 
     def test_overrides(self):
-        args = cli.parse_args(["--port", "9000", "--dir", "/tmp/drop",
-                               "--name", "drop.local", "--no-publish"])
-        self.assertEqual((args.port, args.upload_dir, args.name),
-                         (9000, "/tmp/drop", "drop.local"))
-        self.assertFalse(args.publish)
+        args = cli.parse_args(["--port", "9000", "--dir", "/tmp/drop"])
+        self.assertEqual((args.port, args.upload_dir),
+                         (9000, "/tmp/drop"))
 
 
 class AnnounceTest(unittest.TestCase):
@@ -53,7 +45,7 @@ class AnnounceTest(unittest.TestCase):
         """Silence here would look like success and reach nothing."""
         out = self.say(unresolved="pc.local")
         self.assertIn("[!] nothing answers for pc.local", out)
-        self.assertIn("mdns extra", out)
+        self.assertIn("Bonjour", out)
 
     def test_nothing_alarming_when_the_name_resolves(self):
         self.assertNotIn("[!]", self.say())
@@ -81,14 +73,6 @@ class TokenTest(unittest.TestCase):
         made = {tokens.new_token() for _ in range(5)}
         self.assertEqual(len(made), 5)
         self.assertTrue(all(len(t) >= 16 for t in made))
-
-    def test_write_token_overwrites_file(self):
-        with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, "token.txt")
-            tokens.write_token(path, "one")
-            tokens.write_token(path, "two")
-            with open(path) as fh:
-                self.assertEqual(fh.read().strip(), "two")
 
 
 if __name__ == "__main__":

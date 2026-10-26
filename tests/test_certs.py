@@ -164,10 +164,6 @@ class StabilityTest(CertTest):
         self.assertEqual(self.ensure(), (True, True))
         load(self.cert).verify_directly_issued_by(load(self.ca))
 
-    def test_force_replaces_both(self):
-        self.ensure()
-        self.assertEqual(self.ensure(force=True), (True, True))
-
     def test_expiring_leaf_is_re_signed(self):
         self.ensure()
         soon = datetime.datetime.now(datetime.timezone.utc) + \
@@ -200,7 +196,7 @@ class SanContentsTest(CertTest):
                          sorted([NAME, OTHER, "localhost"]))
 
     def test_an_address_given_as_a_name_still_works(self):
-        """--name 192.168.0.9 is unusual but should not produce a DNS entry."""
+        """A bare address as a name is unusual but should not produce a DNS entry."""
         self.ensure(names=["192.168.0.9"])
         self.assertIn("192.168.0.9", san_ips(self.cert))
         self.assertEqual(san_names(self.cert), ["localhost"])

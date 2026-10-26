@@ -15,11 +15,6 @@ dependencies = [
     "qrcode>=7.4",
 ]
 
-[project.optional-dependencies]
-# Only needed to publish a name the system does not already answer for.
-# Avahi (Linux) and Bonjour (macOS, Windows) already publish the hostname.
-mdns = ["zeroconf>=0.131"]
-
 [project.scripts]
 file-transfer = "filetransfer.cli:main"
 

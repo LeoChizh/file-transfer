@@ -19,7 +19,6 @@ file-transfer/
   ca-key.pem       its key (created automatically, mode 600)
   cert.pem         server certificate, signed by the CA
   key.pem          its key (created automatically, mode 600)
-  token.txt        current secret used in the URL (rewritten on every start)
   uploads/         files land here
   tests/           unit tests
   .venv/           python venv
@@ -47,8 +46,8 @@ py -m venv .venv
 pip install -r requirements.txt
 ```
 
-That is all the setup there is. The first run creates the certificate, the
-key, the token and the upload folder; there is nothing to configure.
+That is all the setup there is. The first run creates the certificates and the
+upload folder; there is nothing to configure.
 
 ## Run
 
@@ -60,24 +59,26 @@ Installing it (`pip install -e .`) also gives a `file-transfer` command that
 works from any directory.
 
 Everything it writes --- `ca.pem`, `ca-key.pem`, `cert.pem`, `key.pem`,
-`token.txt`, `uploads/` --- lands in the current directory, so run it from
+`uploads/` --- lands in the current directory, so run it from
 wherever you want the files. Leave it running; stop it with Ctrl-C.
 
 ```
 --port PORT     port to listen on (default 8443)
 --dir PATH      where files land (default ./uploads)
---name NAME     the name to serve under (default: this machine's .local name)
---no-publish    only use the name if something already answers for it
---cert PATH     --key PATH    --ca PATH    --ca-key PATH    --token-file PATH
 ```
 
-It prints one URL, a QR code of it, and the secret token it contains:
+It prints one URL and a QR code of it. The URL carries a secret token, and
+anything without the token gets a 404, downloads included:
 
 ```
 [*] https://your-pc.local:8443/Xk3...Qw/
 [*] first time on this phone? install https://your-pc.local:8443/Xk3...Qw/ca.pem
 [*] saving into /home/user/file-transfer/uploads
 ```
+
+The token is new on every start, so after a restart an old bookmark or a
+screenshot of the QR code no longer works: scan the new one. It is only shown
+on screen, never saved to a file.
 
 ### No addresses, by design
 
@@ -99,30 +100,19 @@ like success:
 
 ```
 [!] nothing answers for your-pc.local here, so the phone probably cannot
-    reach it either: install the mdns extra to publish it, or pass --name
+    reach it either: check that Bonjour (Windows) or Avahi (Linux) is running
 ```
 
 Avahi (Linux) and Bonjour (macOS, Windows) already answer for the machine's
-own hostname, which is the usual case and needs nothing installed.
-Publishing some *other* name needs the optional dependency:
+own hostname, which is the usual case and needs nothing installed. This
+program never publishes a name itself, and the name is always the machine's
+own, so the certificate never has to change for it.
 
-```sh
-pip install -e ".[mdns]"      # brings in zeroconf
-python -m filetransfer --name filedrop
-```
-
-`--name` also takes a name from somewhere else entirely --- a static entry
-on the router, say, or a hosts file --- in which case nothing has to be
-published at all:
-
-```sh
-python -m filetransfer --name nas.lan --no-publish
-```
-
-A name is only used once it has been checked to resolve to *this* machine,
-by asking the kernel to bind the address it resolves to. An address this
+A name is only trusted once **every** address it resolves to has been checked
+to be *this* machine's, by asking the kernel to bind it. An address this
 machine does not hold cannot be bound, so a namesake on the same LAN cannot
-quietly capture the phone.
+quietly capture the phone, even if it answers alongside the real one. The
+lookup gives up after three seconds rather than stalling startup.
 
 The server listens on IPv4 and IPv6 on one socket, because a `.local` name
 usually carries a link-local IPv6 record as well and iOS may try it first.
@@ -143,7 +133,7 @@ There are two certificates, the way `mkcert` does it:
 | file | what it is | changes |
 |---|---|---|
 | `ca.pem` | the local authority. **This is the one the phone installs.** | ~never (10 years) |
-| `cert.pem` | the server certificate, signed by the CA | whenever a name or address changes |
+| `cert.pem` | the server certificate, signed by the CA | when the hostname changes, or about a month before it expires |
 
 The authority is named after the machine and the day it was made, for
 example `your-pc file-transfer CA 2026-10-26`. That is the only thing the
@@ -169,8 +159,8 @@ startup output says so explicitly when that happens.
 4. Settings -> General -> About -> **Certificate Trust Settings** -> turn it
    on for "file-transfer local CA".
 
-From then on there are no warnings, by name or by address, and it survives
-restarts, new tokens and new addresses.
+From then on there are no warnings, and it survives restarts, new tokens and
+new addresses.
 
 ### Why the old single certificate was never trusted
 
@@ -182,14 +172,9 @@ now carries that EKU, a `keyUsage` of digital signature plus key
 encipherment, the names in the `subjectAltName` (never the common name), and
 a lifetime under Apple's 398-day limit.
 
-To rebuild by hand, or to add a name:
-
-```sh
-python -m filetransfer.certs --force my-pc.local
-```
-
-`--force` replaces the authority too, so the phone will need steps 3 and 4
-again. Leave it off to just re-sign the server certificate.
+To start over --- a new authority, say --- delete `ca.pem`, `ca-key.pem`,
+`cert.pem` and `key.pem` and run it again. The phone will need steps 3 and 4
+again for the new authority.
 
 ## Tests
 
@@ -238,6 +223,9 @@ First check the firewall and that both devices are on the same Wi-Fi. Then
 check the name resolves from the phone at all: if the network blocks
 multicast, `.local` will not work and there is no fallback --- see
 [No addresses, by design](#no-addresses-by-design). A VPN on the *phone* can
-also route the request away from the LAN; turn it off there. If the startup
-output carried the `[!] nothing answers for ...` line, the name was already
-known to be unusable. A VPN on the *iPhone* can also route the request away from the LAN --- turn it off there, or exclude the subnet.
+also route the request away from the LAN; turn it off there, or exclude the
+subnet. If the startup output carried the `[!] nothing answers for ...` line,
+the name was already known to be unusable on this machine; check that Bonjour
+(Windows) or Avahi (Linux) is running. If it is and the phone still cannot
+find the machine, a hostname with an underscore or other unusual characters
+is worth changing.
