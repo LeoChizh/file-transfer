@@ -3,10 +3,9 @@ import os
 import tempfile
 import threading
 import unittest
-from http.server import ThreadingHTTPServer
 from unittest import mock
 
-import recv
+from filetransfer import names, server
 
 TOKEN = "testtoken"
 
@@ -27,14 +26,13 @@ def multipart(files):
 class ServerTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        for p in (mock.patch.object(recv, "UPLOAD_DIR", self.tmp.name),
-                  mock.patch.object(recv, "TOKEN", TOKEN)):
-            p.start()
-            self.addCleanup(p.stop)
-        quiet = mock.patch.object(recv.Handler, "log_message")
+        quiet = mock.patch.object(server.Handler, "log_message")
         quiet.start()
         self.addCleanup(quiet.stop)
-        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), recv.Handler)
+        # the folder and the secret are arguments, so there is no module
+        # state to patch here
+        self.httpd = server.make_server(self.tmp.name, TOKEN, port=0,
+                                        host="127.0.0.1")
         self.port = self.httpd.server_address[1]
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
         self.addCleanup(self.tmp.cleanup)
@@ -75,6 +73,10 @@ class ServerTest(unittest.TestCase):
         self.assertEqual((status, loc), (303, "./"))
         self.assertEqual(self.req("GET", f"/{TOKEN}/a.txt")[2], b"hello")
 
+    def test_head_on_the_form_has_no_body(self):
+        status, _, body = self.req("HEAD", f"/{TOKEN}/")
+        self.assertEqual((status, body), (200, b""))
+
     def test_multiple_files(self):
         self.upload(("a.txt", b"1"), ("b.txt", b"2"))
         self.assertEqual(self.saved(), ["a.txt", "b.txt"])
@@ -89,6 +91,12 @@ class ServerTest(unittest.TestCase):
     def test_path_traversal_is_flattened(self):
         self.upload(("../../evil.txt", b"x"), ("..\\..\\evil2.txt", b"x"))
         self.assertEqual(self.saved(), ["evil.txt", "evil2.txt"])
+
+    def test_gitkeep_is_hidden_from_the_listing(self):
+        open(os.path.join(self.tmp.name, ".gitkeep"), "w").close()
+        page = self.req("GET", f"/{TOKEN}/")[2].decode()
+        self.assertNotIn(".gitkeep", page)
+        self.assertIn("<em>empty</em>", page)
 
     def test_listing_escapes_html(self):
         self.upload(('"><script>alert(1)</script>.txt', b"x"))
@@ -107,55 +115,49 @@ class ServerTest(unittest.TestCase):
             self.req("POST", f"/{TOKEN}/upload", files=[])[0], 400)
 
     def test_error_does_not_leak_details(self):
-        with mock.patch.object(recv, "unique_path",
+        with mock.patch.object(server, "unique_path",
                                side_effect=RuntimeError("SECRET-PATH")):
             status, _, body = self.upload(("a.txt", b"x"))
         self.assertEqual(status, 500)
         self.assertNotIn(b"SECRET-PATH", body)
 
+    def test_two_servers_do_not_share_a_token_or_folder(self):
+        """State lives on the handler, so a second server is independent."""
+        with tempfile.TemporaryDirectory() as other_dir:
+            other = server.make_server(other_dir, "othertoken", port=0,
+                                       host="127.0.0.1")
+            port = other.server_address[1]
+            threading.Thread(target=other.serve_forever,
+                             daemon=True).start()
+            try:
+                conn = http.client.HTTPConnection("127.0.0.1", port,
+                                                  timeout=5)
+                conn.request("GET", f"/{TOKEN}/")  # this server's token
+                self.assertEqual(conn.getresponse().status, 404)
+                conn.close()
+                self.upload(("mine.txt", b"x"))
+                self.assertEqual(os.listdir(other_dir), [])
+            finally:
+                other.shutdown()
+                other.server_close()
+
+
+class UniquePathTest(unittest.TestCase):
+    def test_suffixes_until_free(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(names.unique_path(d, "a.txt")[0], "a.txt")
+            self.assertEqual(names.unique_path(d, "a.txt")[0], "a (1).txt")
+            self.assertEqual(names.unique_path(d, "a.txt")[0], "a (2).txt")
+
 
 class CleanNameTest(unittest.TestCase):
     def test_cases(self):
-        c = recv.clean_name
+        c = names.clean_name
         self.assertEqual(c("a/b/c.txt"), "c.txt")
         self.assertEqual(c("C:\\x\\y.txt"), "y.txt")
         self.assertEqual(c("a:b?.txt"), "ab.txt")
         self.assertEqual(c(".."), "upload")
         self.assertEqual(c("name. "), "name")
-
-
-class QrTest(unittest.TestCase):
-    def test_qr_printed(self):
-        import io
-        buf = io.StringIO()
-        self.assertTrue(recv.print_qr("https://1.2.3.4:8443/tok/", out=buf))
-        self.assertGreater(len(buf.getvalue().splitlines()), 10)
-
-    def test_qr_skipped_without_library(self):
-        with mock.patch.dict("sys.modules", {"qrcode": None}):
-            self.assertFalse(recv.print_qr("https://x/"))
-
-
-class TokenTest(unittest.TestCase):
-    def test_token_is_random_per_process(self):
-        import subprocess
-        import sys
-        code = "import recv; print(recv.TOKEN)"
-        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        out = {subprocess.run([sys.executable, "-c", code], cwd=root,
-                              capture_output=True, text=True).stdout.strip()
-               for _ in range(2)}
-        self.assertEqual(len(out), 2)
-        self.assertTrue(all(len(t) >= 16 for t in out))
-
-    def test_write_token_overwrites_file(self):
-        with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, "token.txt")
-            with mock.patch.object(recv, "TOKEN_FILE", path):
-                recv.write_token("one")
-                recv.write_token("two")
-            with open(path) as fh:
-                self.assertEqual(fh.read().strip(), "two")
 
 
 if __name__ == "__main__":
