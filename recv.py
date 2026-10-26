@@ -21,20 +21,15 @@ PORT = 8443
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 
-def load_token():
-    """Shared secret that prefixes every URL. Created on first run."""
-    if os.path.exists(TOKEN_FILE):
-        with open(TOKEN_FILE) as fh:
-            token = fh.read().strip()
-        if token:
-            return token
-    token = secrets.token_urlsafe(16)
+# Fresh shared secret on every start; it is part of every URL.
+TOKEN = secrets.token_urlsafe(16)
+
+
+def write_token(token=None):
+    """Save the current token to token.txt (overwritten on each run)."""
     with open(TOKEN_FILE, "w") as fh:
-        fh.write(token + "\n")
-    return token
+        fh.write((token or TOKEN) + "\n")
 
-
-TOKEN = load_token()
 
 FORM_HTML = """<!doctype html>
 <html><head><meta charset="utf-8">
@@ -195,6 +190,7 @@ def main():
 
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    write_token()
     url = f"https://{lan_ip()}:{PORT}/{TOKEN}/"
     print_qr(url)
     print(f"[*] {url}")

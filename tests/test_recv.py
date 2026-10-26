@@ -137,13 +137,25 @@ class QrTest(unittest.TestCase):
 
 
 class TokenTest(unittest.TestCase):
-    def test_token_persisted(self):
+    def test_token_is_random_per_process(self):
+        import subprocess
+        import sys
+        code = "import recv; print(recv.TOKEN)"
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        out = {subprocess.run([sys.executable, "-c", code], cwd=root,
+                              capture_output=True, text=True).stdout.strip()
+               for _ in range(2)}
+        self.assertEqual(len(out), 2)
+        self.assertTrue(all(len(t) >= 16 for t in out))
+
+    def test_write_token_overwrites_file(self):
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "token.txt")
             with mock.patch.object(recv, "TOKEN_FILE", path):
-                first = recv.load_token()
-                self.assertGreaterEqual(len(first), 16)
-                self.assertEqual(recv.load_token(), first)
+                recv.write_token("one")
+                recv.write_token("two")
+            with open(path) as fh:
+                self.assertEqual(fh.read().strip(), "two")
 
 
 if __name__ == "__main__":

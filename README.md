@@ -10,7 +10,7 @@ file-transfer/
   gen_cert.py    makes cert.pem / key.pem (cross-platform)
   cert.pem       self-signed cert (created automatically)
   key.pem        cert key (created automatically)
-  token.txt      shared secret used in the URL (created on first run)
+  token.txt      current secret used in the URL (rewritten on every start)
   uploads/       files land here
   tests/         unit tests
   .venv/         python venv
@@ -51,7 +51,7 @@ It prints the URL, including the secret token:
 
 A QR code of the URL is drawn above it: scan it with the iPhone camera instead of typing the token. (Needs the `qrcode` package; without it only the URL is printed.)
 
-Open exactly that URL. Anything without the token returns 404, for uploads and downloads alike. To rotate the token, delete `token.txt`.
+Open exactly that URL. Anything without the token returns 404, for uploads and downloads alike. The token is regenerated on every start, so old URLs and bookmarks stop working after a restart; scan the new QR code. `token.txt` just holds the current one.
 
 ## Upload from iPhone
 
