@@ -49,6 +49,8 @@ It prints the URL, including the secret token:
 [*] saving into /home/user/file-transfer/uploads
 ```
 
+A QR code of the URL is drawn above it: scan it with the iPhone camera instead of typing the token. (Needs the `qrcode` package; without it only the URL is printed.)
+
 Open exactly that URL. Anything without the token returns 404, for uploads and downloads alike. To rotate the token, delete `token.txt`.
 
 ## Upload from iPhone

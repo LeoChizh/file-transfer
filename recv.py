@@ -4,6 +4,7 @@ import html
 import os
 import secrets
 import ssl
+import sys
 import urllib.parse
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
@@ -165,6 +166,23 @@ class Handler(SimpleHTTPRequestHandler):
                 super().do_GET()
 
 
+def print_qr(url, out=None):
+    """Draw url as a QR code in the terminal. Returns False if unavailable."""
+    try:
+        import qrcode
+    except ImportError:
+        return False
+    out = out or sys.stdout
+    qr = qrcode.QRCode(border=2)
+    qr.add_data(url)
+    qr.make()
+    try:
+        qr.print_ascii(out=out, invert=True)  # half-block characters
+    except UnicodeEncodeError:  # legacy Windows code page
+        return False
+    return True
+
+
 def main():
     if ensure_cert(CERT, KEY):
         print("[!] new certificate: reinstall/trust it on the iPhone",
@@ -175,7 +193,11 @@ def main():
     ctx.load_cert_chain(certfile=CERT, keyfile=KEY)
     httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
 
-    print(f"[*] https://{lan_ip()}:{PORT}/{TOKEN}/")
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    url = f"https://{lan_ip()}:{PORT}/{TOKEN}/"
+    print_qr(url)
+    print(f"[*] {url}")
     print(f"[*] saving into {UPLOAD_DIR}")
     try:
         httpd.serve_forever()

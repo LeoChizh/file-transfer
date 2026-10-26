@@ -124,6 +124,18 @@ class CleanNameTest(unittest.TestCase):
         self.assertEqual(c("name. "), "name")
 
 
+class QrTest(unittest.TestCase):
+    def test_qr_printed(self):
+        import io
+        buf = io.StringIO()
+        self.assertTrue(recv.print_qr("https://1.2.3.4:8443/tok/", out=buf))
+        self.assertGreater(len(buf.getvalue().splitlines()), 10)
+
+    def test_qr_skipped_without_library(self):
+        with mock.patch.dict("sys.modules", {"qrcode": None}):
+            self.assertFalse(recv.print_qr("https://x/"))
+
+
 class TokenTest(unittest.TestCase):
     def test_token_persisted(self):
         with tempfile.TemporaryDirectory() as d:
