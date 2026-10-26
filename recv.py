@@ -1,19 +1,39 @@
 #!/usr/bin/env python3
+import hmac
+import html
 import os
+import secrets
 import ssl
-import sys
-from http.server import HTTPServer, SimpleHTTPRequestHandler
+import urllib.parse
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
+from gen_cert import ensure_cert, lan_ip
 from multipart import parse_form_data
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 UPLOAD_DIR = os.path.join(HERE, "uploads")
 CERT = os.path.join(HERE, "cert.pem")
 KEY = os.path.join(HERE, "key.pem")
+TOKEN_FILE = os.path.join(HERE, "token.txt")
 PORT = 8443
 
 os.makedirs(UPLOAD_DIR, exist_ok=True)
-os.chdir(UPLOAD_DIR)  # serve + save in uploads/
+
+
+def load_token():
+    """Shared secret that prefixes every URL. Created on first run."""
+    if os.path.exists(TOKEN_FILE):
+        with open(TOKEN_FILE) as fh:
+            token = fh.read().strip()
+        if token:
+            return token
+    token = secrets.token_urlsafe(16)
+    with open(TOKEN_FILE, "w") as fh:
+        fh.write(token + "\n")
+    return token
+
+
+TOKEN = load_token()
 
 FORM_HTML = """<!doctype html>
 <html><head><meta charset="utf-8">
@@ -25,9 +45,9 @@ FORM_HTML = """<!doctype html>
   li{margin:.2em 0}
 </style></head>
 <body>
-<h2>Send a file</h2>
-<form method="POST" action="/upload" enctype="multipart/form-data">
-  <input type="file" name="file" required><br><br>
+<h2>Send files</h2>
+<form method="POST" action="upload" enctype="multipart/form-data">
+  <input type="file" name="file" multiple required><br><br>
   <button type="submit">Upload</button>
 </form>
 <hr>
@@ -35,9 +55,45 @@ FORM_HTML = """<!doctype html>
 <ul>__LISTING__</ul>
 </body></html>"""
 
+
+def unique_path(name):
+    """Atomically reserve UPLOAD_DIR/name, adding ' (n)' if it is taken."""
+    stem, ext = os.path.splitext(name)
+    candidate, n = name, 0
+    while True:
+        path = os.path.join(UPLOAD_DIR, candidate)
+        try:
+            os.close(os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+            return candidate, path
+        except FileExistsError:
+            n += 1
+            candidate = f"{stem} ({n}){ext}"
+
+
+def clean_name(raw):
+    # browsers (and old IE) may send either separator, whatever the server OS
+    name = raw.replace("\\", "/").split("/")[-1]
+    name = "".join(c for c in name if c >= " " and c not in '<>:"|?*')
+    name = name.strip(" .")
+    return name or "upload"
+
+
 class Handler(SimpleHTTPRequestHandler):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, directory=UPLOAD_DIR, **kwargs)
+
+    def _route(self):
+        """Return the path below /<token>/, or None if the token is wrong."""
+        path = urllib.parse.urlsplit(self.path).path
+        parts = path.split("/", 2)  # ['', token, rest]
+        if len(parts) < 2 or not hmac.compare_digest(
+                parts[1].encode(), TOKEN.encode()):
+            return None
+        return "/" + (parts[2] if len(parts) > 2 else "")
+
     def do_POST(self):
-        if self.path != "/upload":
+        inner = self._route()
+        if inner != "/upload":
             self.send_error(404)
             return
         try:
@@ -49,67 +105,77 @@ class Handler(SimpleHTTPRequestHandler):
             }
             forms, files = parse_form_data(environ)
 
-            if "file" not in files:
+            uploads = [f for f in files.getall("file")
+                       if getattr(f, "filename", None)]
+            if not uploads:
                 self.send_error(400, "no file field")
                 return
 
-            item = files["file"]
-            items = item if isinstance(item, list) else [item]
-
-            for f in items:
-                if not getattr(f, "filename", None):
-                    continue
-                name = os.path.basename(f.filename)
-                dest = os.path.join(UPLOAD_DIR, name)
+            for f in uploads:
+                name, dest = unique_path(clean_name(f.filename))
                 f.save_as(dest)
                 print(f"[+] saved {name}", flush=True)
 
             self.send_response(303)
-            self.send_header("Location", "/")
+            self.send_header("Location", "./")
             self.end_headers()
         except Exception as e:
-            print(f"[!] error: {e}", flush=True)
-            self.send_error(500, str(e))
+            print(f"[!] error: {e!r}", flush=True)
+            self.send_error(500, "upload failed")
 
     def do_GET(self):
-        if self.path == "/":
+        self._serve(head=False)
+
+    def do_HEAD(self):
+        self._serve(head=True)
+
+    def _serve(self, head):
+        inner = self._route()
+        if inner is None:
+            self.send_error(404)
+            return
+        if inner == "/":
+            if not urllib.parse.urlsplit(self.path).path.endswith("/"):
+                self.send_response(301)  # relative links need the slash
+                self.send_header("Location", self.path + "/")
+                self.end_headers()
+                return
             files = sorted(os.listdir(UPLOAD_DIR))
+            files = [f for f in files if f != ".gitkeep"]
             if files:
                 listing = "".join(
-                    f'<li><a href="/{f}">{f}</a></li>' for f in files
+                    f'<li><a href="{urllib.parse.quote(f)}">'
+                    f'{html.escape(f)}</a></li>' for f in files
                 )
             else:
                 listing = "<li><em>empty</em></li>"
-            html = FORM_HTML.replace("__LISTING__", listing).encode("utf-8")
+            body = FORM_HTML.replace("__LISTING__", listing).encode("utf-8")
 
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(html)))
+            self.send_header("Content-Length", str(len(body)))
             self.end_headers()
-            self.wfile.write(html)
+            if not head:
+                self.wfile.write(body)
         else:
-            super().do_GET()
+            self.path = inner  # parent class resolves it inside UPLOAD_DIR
+            if head:
+                super().do_HEAD()
+            else:
+                super().do_GET()
 
 
 def main():
-    if not (os.path.exists(CERT) and os.path.exists(KEY)):
-        sys.exit(f"missing cert/key. generate with:\n"
-                 f"  openssl req -x509 -newkey rsa:2048 -nodes "
-                 f"-keyout key.pem -out cert.pem -days 365 "
-                 f"-subj '/CN=filetransfer'")
+    if ensure_cert(CERT, KEY):
+        print("[!] new certificate: reinstall/trust it on the iPhone",
+              flush=True)
 
-    httpd = HTTPServer(("0.0.0.0", PORT), Handler)
+    httpd = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ctx.load_cert_chain(certfile=CERT, keyfile=KEY)
     httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
 
-    try:
-        ips = os.popen("hostname -I").read().split()
-    except Exception:
-        ips = []
-    ip = ips[0] if ips else "<linux-ip>"
-
-    print(f"[*] https://{ip}:{PORT}/")
+    print(f"[*] https://{lan_ip()}:{PORT}/{TOKEN}/")
     print(f"[*] saving into {UPLOAD_DIR}")
     try:
         httpd.serve_forever()

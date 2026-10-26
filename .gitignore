@@ -13,3 +13,6 @@ uploads/*
 
 # misc
 .DS_Store
+
+# shared secret
+token.txt
