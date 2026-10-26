@@ -195,8 +195,6 @@ One test file per module: `test_mdns.py`, `test_certs.py`,
 random port --- the upload folder and the token are constructor arguments,
 so nothing has to be monkeypatched.
 
-They also run on Linux and Windows via GitHub Actions (`.github/workflows/test.yml`).
-
 ## Notes
 
 - Files are streamed to disk, so large files are fine.
