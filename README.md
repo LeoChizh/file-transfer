@@ -10,13 +10,15 @@ file-transfer/
     cli.py         argument parsing, the QR code, what gets printed
     server.py      the HTTPS server and its one request handler
     addresses.py   which address of this machine to advertise
-    certs.py       makes cert.pem / key.pem (cross-platform)
+    certs.py       the local CA and the server certificate
     names.py       safe, non-colliding names for uploaded files
     page.py        the upload form and file listing
     tokens.py      the shared secret in every URL
   pyproject.toml   installable, provides the `file-transfer` command
-  cert.pem         self-signed cert (created automatically)
-  key.pem          cert key (created automatically)
+  ca.pem           local authority -- the one to install on the phone
+  ca-key.pem       its key (created automatically, mode 600)
+  cert.pem         server certificate, signed by the CA
+  key.pem          its key (created automatically, mode 600)
   token.txt        current secret used in the URL (rewritten on every start)
   uploads/         files land here
   tests/           unit tests
@@ -109,17 +111,91 @@ Open exactly that URL. Anything without the token returns 404, for uploads and d
 3. Cert warning: **Show Details** → **visit this website** (once per device).
 4. Pick one or more files → **Upload**. They appear in `uploads/`.
 
+## The .local name
+
+If something on the machine already answers mDNS for its hostname --- Avahi
+on Linux, Bonjour on macOS and Windows do, out of the box --- the URL uses
+that name instead of an address:
+
+```
+[*] https://your-pc.local:8443/Xk3...Qw/
+[*] or https://192.168.35.9:8443/Xk3...Qw/   (certificate warning)
+```
+
+iOS resolves `.local` natively, so the phone needs nothing installed. The
+name is only used when it already resolves to one of this machine's
+addresses; a stale cache or a namesake on the LAN would otherwise send the
+phone to a stranger's machine.
+
+A name also survives a change of address, so the URL and the QR code stay
+the same across reboots and new leases. The address URL is printed as a
+fallback and is equally trusted --- both are in the certificate.
+
+```
+--name NAME   serve as NAME.local instead of the hostname
+--no-mdns     ignore names, use addresses as before
+```
+
+Publishing a *different* name needs the optional dependency:
+
+```sh
+pip install -e ".[mdns]"      # brings in zeroconf
+python -m filetransfer --name filedrop
+```
+
+mDNS rides on multicast, which guest Wi-Fi and client-isolated networks
+block. That is what the address fallback is for.
+
+The server listens on IPv4 and IPv6 on one socket, because a `.local` name
+usually carries a link-local IPv6 record as well and iOS may try it first.
+
 ## Certificate
 
-The server creates the certificate automatically if it is missing, so making one by hand is optional.
+There are two certificates, the way `mkcert` does it:
 
-It is **not** regenerated on every start: iOS trusts one specific certificate, so that would force a reinstall on the phone each time. A new one is made only when the cert is missing, expires within 30 days, or no longer covers one of this machine's LAN addresses. Connecting or dropping a VPN does **not** count: tunnel addresses are deliberately left out, so the certificate on the phone keeps working either way. A warning is printed when a new one is made.
+| file | what it is | changes |
+|---|---|---|
+| `ca.pem` | the local authority. **This is the one the phone installs.** | ~never (10 years) |
+| `cert.pem` | the server certificate, signed by the CA | whenever a name or address changes |
 
-Every served address goes into the certificate's `subjectAltName`, which iOS requires. To add a hostname or force a new cert:
+That split is the whole point. The phone trusts the authority, so the server
+certificate underneath can be re-signed as often as it likes --- new Wi-Fi,
+new DHCP lease, VPN up or down --- and the phone never has to be touched
+again. Only a new `ca.pem` would mean another trip through Settings, and the
+startup output says so explicitly when that happens.
+
+### Trusting it on the iPhone, once
+
+1. Open the URL. Safari warns, because nothing is trusted yet --- **Show
+   Details** -> **visit this website**.
+2. On the page, tap **Install the certificate**. That downloads `ca.pem`
+   served as `application/x-x509-ca-cert`, which is what makes iOS offer to
+   install it. Allow the profile.
+3. Settings -> General -> **VPN & Device Management** -> install it.
+4. Settings -> General -> About -> **Certificate Trust Settings** -> turn it
+   on for "file-transfer local CA".
+
+From then on there are no warnings, by name or by address, and it survives
+restarts, new tokens and new addresses.
+
+### Why the old single certificate was never trusted
+
+A self-signed server certificate is not enough for iOS 13 and later, which
+requires every TLS server certificate to carry an `extendedKeyUsage` of
+`id-kp-serverAuth`. Without it the certificate is refused *even after* the
+profile is installed and fully trusted, with no useful explanation. The leaf
+now carries that EKU, a `keyUsage` of digital signature plus key
+encipherment, the names in the `subjectAltName` (never the common name), and
+a lifetime under Apple's 398-day limit.
+
+To rebuild by hand, or to add a name:
 
 ```sh
 python -m filetransfer.certs --force my-pc.local
 ```
+
+`--force` replaces the authority too, so the phone will need steps 3 and 4
+again. Leave it off to just re-sign the server certificate.
 
 ## Tests
 
@@ -158,9 +234,12 @@ They also run on Linux and Windows via GitHub Actions (`.github/workflows/test.y
 Activate the venv and run `pip install -r requirements.txt`, from the project directory. Do **not** install `python-multipart`; it uses the same module name and conflicts.
 
 **Cert warning keeps blocking upload**
-Install `cert.pem` on the iPhone once (AirDrop or email it, then open it):
-Settings → General → VPN & Device Management → install, then
-Settings → General → About → Certificate Trust Settings → enable full trust.
+Install **`ca.pem`**, not `cert.pem`, and enable it under Certificate Trust
+Settings; see [Certificate](#certificate). Tapping **Install the
+certificate** on the upload page is the easiest route. If you trusted a
+certificate made by an older version of this tool, delete that profile ---
+it lacked the `extendedKeyUsage` extension iOS requires and was never
+actually trusted.
 
 **Cannot reach the page**
 Check the IP printed on startup, the firewall, and that both devices are on the same subnet. If the machine has several addresses, try the other `or ...` URLs, or pin the right one with `FILE_TRANSFER_HOST`. To reach the server *over* a VPN, pass its tunnel address that way --- it is skipped by default, and doing so rewrites the certificate. A VPN on the *iPhone* can also route the request away from the LAN --- turn it off there, or exclude the subnet.
