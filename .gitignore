@@ -6,11 +6,8 @@ __pycache__/
 build/
 dist/
 
-# secrets / generated
-cert.pem
-key.pem
-ca.pem
-ca-key.pem
+# secrets / generated -- never commit key material, whatever it is called
+*.pem
 
 # uploaded files
 uploads/*

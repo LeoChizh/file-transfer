@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from filetransfer import cli, mdns, tokens
+from filetransfer import cli, tokens
 from filetransfer.server import DEFAULT_PORT
 
 
@@ -13,111 +13,62 @@ class ParseArgsTest(unittest.TestCase):
         args = cli.parse_args([])
         self.assertEqual(args.port, DEFAULT_PORT)
         self.assertEqual(args.upload_dir, "uploads")
-        self.assertIsNone(args.host)
         self.assertIsNone(args.name)
-        self.assertTrue(args.mdns)
+        self.assertTrue(args.publish)
         self.assertEqual(args.ca, "ca.pem")
         self.assertEqual(args.ca_key, "ca-key.pem")
 
-    def test_mdns_can_be_turned_off(self):
-        self.assertFalse(cli.parse_args(["--no-mdns"]).mdns)
-
     def test_overrides(self):
         args = cli.parse_args(["--port", "9000", "--dir", "/tmp/drop",
-                               "--host", "192.168.1.9"])
-        self.assertEqual((args.port, args.upload_dir, args.host),
-                         (9000, "/tmp/drop", "192.168.1.9"))
+                               "--name", "drop.local", "--no-publish"])
+        self.assertEqual((args.port, args.upload_dir, args.name),
+                         (9000, "/tmp/drop", "drop.local"))
+        self.assertFalse(args.publish)
 
 
 class AnnounceTest(unittest.TestCase):
-    def say(self, urls, skipped=(), **kw):
+    URL = "https://pc.local:8443/tok/"
+
+    def say(self, url=URL, **kw):
         buf = io.StringIO()
-        cli.announce(urls, list(skipped), "/tmp/uploads", out=buf, **kw)
+        cli.announce(url, "/tmp/uploads", out=buf, **kw)
         return buf.getvalue()
 
-    def test_single_url_is_bare(self):
-        out = self.say(["https://192.168.0.10:8443/tok/"])
-        self.assertIn("[*] https://192.168.0.10:8443/tok/", out)
-        self.assertNotIn(" or ", out)
-        self.assertNotIn("wrong one first", out)
+    def test_url_and_folder(self):
+        out = self.say()
+        self.assertIn(f"[*] {self.URL}", out)
         self.assertIn("[*] saving into /tmp/uploads", out)
 
-    def test_extra_urls_and_hint(self):
-        out = self.say(["https://a/", "https://b/"], host_hint=True)
-        self.assertIn("[*] or https://b/", out)
-        self.assertIn("wrong one first", out)
-
-    def test_no_address_hint_when_the_extra_url_is_a_name(self):
-        """One address plus a .local name is not an ambiguous address."""
-        out = self.say(["https://pc.local:8443/t/",
-                        "https://10.0.0.1:8443/t/"])
-        self.assertIn("[*] or https://10.0.0.1:8443/t/", out)
-        self.assertNotIn("wrong one first", out)
-
-    def test_no_certificate_warnings_any_more(self):
-        """Every URL is covered by the CA-signed certificate."""
-        out = self.say(["https://pc.local/", "https://10.0.0.1/"])
-        self.assertNotIn("warning", out)
+    def test_qr_code_is_drawn_above_the_url(self):
+        self.assertGreater(len(self.say().splitlines()), 10)
 
     def test_ca_install_line(self):
-        out = self.say(["https://pc.local/t/"],
-                       ca_url="https://pc.local/t/ca.pem")
-        self.assertIn("install https://pc.local/t/ca.pem", out)
+        out = self.say(ca_url=self.URL + "ca.pem")
+        self.assertIn(f"install {self.URL}ca.pem", out)
 
     def test_no_ca_line_when_there_is_nothing_to_install(self):
-        self.assertNotIn("install", self.say(["https://pc.local/t/"]))
+        self.assertNotIn("install", self.say())
 
-    def test_skipped_tunnel_is_explained(self):
-        out = self.say(["https://a/"], skipped=["10.99.0.2"])
-        self.assertIn("not serving tunnel 10.99.0.2", out)
-        self.assertIn(cli.HOST_ENV, out)
-        self.assertNotIn("cert", out)  # the CA is what the phone trusts
+    def test_unresolved_name_is_called_out(self):
+        """Silence here would look like success and reach nothing."""
+        out = self.say(unresolved="pc.local")
+        self.assertIn("[!] nothing answers for pc.local", out)
+        self.assertIn("mdns extra", out)
 
-    def test_qr_code_is_drawn_above_the_url(self):
-        out = self.say(["https://192.168.0.10:8443/tok/"])
-        self.assertGreater(len(out.splitlines()), 10)
+    def test_nothing_alarming_when_the_name_resolves(self):
+        self.assertNotIn("[!]", self.say())
 
-
-class ResolveNameTest(unittest.TestCase):
-    def args(self, **kw):
-        argv = []
-        for flag, value in kw.items():
-            argv += [f"--{flag.replace('_', '-')}"] + (
-                [value] if value is not True else [])
-        return cli.parse_args(argv)
-
-    def test_uses_the_hostname_by_default(self):
-        with mock.patch.object(mdns, "ensure_name",
-                               return_value=("pc.local", None)) as ensure, \
-                mock.patch.object(mdns, "default_name",
-                                  return_value="pc.local"):
-            name, _ = cli.resolve_name(self.args(), "192.168.0.10")
-        self.assertEqual(name, "pc.local")
-        self.assertEqual(ensure.call_args[0][0], "pc.local")
-
-    def test_explicit_name_wins(self):
-        with mock.patch.object(mdns, "ensure_name",
-                               return_value=("drop.local", None)) as ensure:
-            cli.resolve_name(self.args(name="drop.local"), "192.168.0.10")
-        self.assertEqual(ensure.call_args[0][0], "drop.local")
-
-    def test_no_mdns_skips_it(self):
-        with mock.patch.object(mdns, "ensure_name") as ensure:
-            self.assertEqual(cli.resolve_name(self.args(no_mdns=True),
-                                              "192.168.0.10"), (None, None))
-        ensure.assert_not_called()
-
-    def test_no_name_without_a_usable_address(self):
-        with mock.patch.object(mdns, "ensure_name") as ensure:
-            self.assertEqual(cli.resolve_name(self.args(), cli.UNKNOWN),
-                             (None, None))
-        ensure.assert_not_called()
+    def test_no_addresses_anywhere_in_the_output(self):
+        """Addresses are not part of this any more."""
+        out = self.say(ca_url=self.URL + "ca.pem")
+        self.assertNotIn("192.168", out)
+        self.assertNotIn("FILE_TRANSFER_HOST", out)
 
 
 class QrTest(unittest.TestCase):
     def test_qr_printed(self):
         buf = io.StringIO()
-        self.assertTrue(cli.print_qr("https://1.2.3.4:8443/tok/", out=buf))
+        self.assertTrue(cli.print_qr("https://pc.local:8443/tok/", out=buf))
         self.assertGreater(len(buf.getvalue().splitlines()), 10)
 
     def test_qr_skipped_without_library(self):

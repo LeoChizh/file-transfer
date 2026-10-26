@@ -7,12 +7,11 @@ from unittest import mock
 from cryptography import x509
 from cryptography.x509.oid import ExtendedKeyUsageOID
 
-from filetransfer import addresses, certs
+from filetransfer import certs
 
 LEAF_ALMOST_OVER = certs.LEAF_DAYS - 10
-LAN = "192.168.0.10"
-TUNNEL = "10.99.0.2"
 NAME = "pc.local"
+OTHER = "drop.local"
 
 
 def load(path):
@@ -53,8 +52,8 @@ class CertTest(unittest.TestCase):
         self.ca = os.path.join(p, "ca.pem")
         self.ca_key = os.path.join(p, "ca-key.pem")
 
-    def ensure(self, ips=(LAN,), **kw):
-        return certs.ensure_cert(self.cert, self.key, ips=ips,
+    def ensure(self, names=(NAME,), **kw):
+        return certs.ensure_cert(self.cert, self.key, names=names,
                                  ca_cert=self.ca, ca_key=self.ca_key, **kw)
 
 
@@ -62,7 +61,7 @@ class WhatTheIphoneChecksTest(CertTest):
     """iOS 13+ silently refuses a server certificate missing any of these."""
 
     def test_leaf_has_server_auth_eku(self):
-        self.ensure(extra=[NAME])
+        self.ensure()
         eku = ext(self.cert, x509.ExtendedKeyUsage).value
         self.assertIn(ExtendedKeyUsageOID.SERVER_AUTH, eku)
 
@@ -81,8 +80,10 @@ class WhatTheIphoneChecksTest(CertTest):
         self.assertLessEqual(days, 398)
 
     def test_name_is_in_the_san_not_the_common_name(self):
-        self.ensure(extra=[NAME])
+        self.ensure()
         self.assertIn(NAME, san_names(self.cert))
+        self.assertEqual(load(self.cert).subject.rfc4514_string(),
+                         "CN=file-transfer")
 
     def test_leaf_really_is_signed_by_the_ca(self):
         self.ensure()
@@ -106,27 +107,18 @@ class StabilityTest(CertTest):
         self.ensure()
         self.assertEqual(self.ensure(), (False, False))
 
-    def test_address_change_re_signs_the_leaf_but_keeps_the_ca(self):
+    def test_name_change_re_signs_the_leaf_but_keeps_the_ca(self):
         self.ensure()
         before = digest(self.ca)
-        self.assertEqual(self.ensure(ips=["10.0.0.7"]), (False, True))
+        self.assertEqual(self.ensure(names=[OTHER]), (False, True))
         self.assertEqual(digest(self.ca), before)
-        self.assertIn("10.0.0.7", san_ips(self.cert))
+        self.assertIn(OTHER, san_names(self.cert))
 
-    def test_name_change_re_signs_the_leaf_but_keeps_the_ca(self):
-        self.ensure(extra=[NAME])
-        before = digest(self.ca)
-        self.assertEqual(self.ensure(extra=["drop.local"]), (False, True))
-        self.assertEqual(digest(self.ca), before)
-        self.assertIn("drop.local", san_names(self.cert))
-
-    def test_vpn_coming_and_going_keeps_the_ca(self):
-        """What used to force a reinstall is now free."""
-        self.ensure(ips=[LAN])
-        before = digest(self.ca)
-        for ips in ([LAN, TUNNEL], [LAN], ["172.16.4.4"], [LAN]):
-            self.ensure(ips=ips)
-            self.assertEqual(digest(self.ca), before)
+    def test_the_certificate_does_not_care_about_addresses(self):
+        """Nothing about the network can invalidate it any more."""
+        self.ensure()
+        self.assertEqual(san_ips(self.cert), ["127.0.0.1"])
+        self.assertEqual(self.ensure(), (False, False))
 
     def test_losing_the_ca_rebuilds_the_chain(self):
         self.ensure()
@@ -143,7 +135,7 @@ class StabilityTest(CertTest):
         soon = datetime.datetime.now(datetime.timezone.utc) + \
             datetime.timedelta(days=LEAF_ALMOST_OVER)
         with mock.patch.object(certs, "_now", return_value=soon):
-            self.assertTrue(certs._needs_regen(self.cert, self.key, [LAN]))
+            self.assertTrue(certs._needs_regen(self.cert, self.key, [NAME]))
 
     def test_unreadable_cert_is_replaced(self):
         self.ensure()
@@ -159,19 +151,20 @@ class StabilityTest(CertTest):
 
 class SanContentsTest(CertTest):
     def test_loopback_is_always_covered(self):
+        """So the machine can always reach itself, whatever mDNS does."""
         self.ensure()
         self.assertIn("127.0.0.1", san_ips(self.cert))
         self.assertIn("localhost", san_names(self.cert))
 
-    def test_every_address_given_is_covered(self):
-        self.ensure(ips=[LAN, "192.168.0.11"], extra=[NAME])
-        self.assertEqual(san_ips(self.cert),
-                         ["127.0.0.1", LAN, "192.168.0.11"])
-        self.assertIn(NAME, san_names(self.cert))
+    def test_several_names_are_covered(self):
+        self.ensure(names=[NAME, OTHER])
+        self.assertEqual(san_names(self.cert),
+                         sorted([NAME, OTHER, "localhost"]))
 
-    def test_placeholder_is_not_put_in_the_san(self):
-        self.ensure(ips=[addresses.UNKNOWN])
-        self.assertEqual(san_ips(self.cert), ["127.0.0.1"])
+    def test_an_address_given_as_a_name_still_works(self):
+        """--name 192.168.0.9 is unusual but should not produce a DNS entry."""
+        self.ensure(names=["192.168.0.9"])
+        self.assertIn("192.168.0.9", san_ips(self.cert))
         self.assertEqual(san_names(self.cert), ["localhost"])
 
 

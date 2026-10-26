@@ -11,9 +11,9 @@ So there are two certificates, the way mkcert does it:
             never changes, which is the point -- trust it once and every
             certificate below it is trusted too.
   cert.pem  the server certificate, signed by the CA. Regenerated whenever
-            the addresses or names change, which costs the phone nothing.
+            the names change, which costs the phone nothing.
 
-Usage: python -m filetransfer.certs [--force] [extra-ip-or-hostname ...]
+Usage: python -m filetransfer.certs [--force] [name ...]
 """
 import argparse
 import datetime
@@ -25,7 +25,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
-from .addresses import lan_ips
+from .mdns import default_name
 
 CA_CERT = "ca.pem"
 CA_KEY = "ca-key.pem"
@@ -141,7 +141,7 @@ def _covers(cert, names):
     return set(_sans(names)) <= set(san)
 
 
-def _needs_regen(cert_path, key_path, ips, names=()):
+def _needs_regen(cert_path, key_path, names):
     """True if the server certificate has to be rebuilt."""
     if not (os.path.exists(cert_path) and os.path.exists(key_path)):
         return True
@@ -151,28 +151,26 @@ def _needs_regen(cert_path, key_path, ips, names=()):
         return True
     if _expiring(cert):
         return True
-    wanted = [n for n in [*names, *ips] if not str(n).startswith("<")]
-    if not wanted:
+    if not names:
         return False  # nothing to check against; keep what we have
-    return not _covers(cert, wanted)
+    return not _covers(cert, names)
 
 
-def ensure_cert(cert_path=CERT, key_path=KEY, extra=(), force=False,
-                ips=None, ca_cert=CA_CERT, ca_key=CA_KEY):
+def ensure_cert(cert_path=CERT, key_path=KEY, names=(), force=False,
+                ca_cert=CA_CERT, ca_key=CA_KEY):
     """Make sure a CA and a server certificate exist. Returns (ca, leaf).
 
     Both are booleans saying whether that file was (re)made. Only a new ca
     needs anything from the phone.
 
-    ips defaults to the addresses this machine would serve; extra holds any
-    additional names. Regenerating the leaf is cheap now that the CA is what
-    the phone trusts, so there is no reason to leave anything out of it.
+    names are the .local (or other) names to serve under; loopback is
+    always included so the machine can reach itself. Re-signing the leaf is
+    cheap, the CA being what the phone trusts, so this never has to leave
+    anything out.
     """
     new_ca = ensure_ca(ca_cert, ca_key, force=force)
-    ips = list(ips) if ips is not None else lan_ips()
-    names = [*extra, *ips, "127.0.0.1", "localhost"]
-    if not (force or new_ca
-            or _needs_regen(cert_path, key_path, ips, extra)):
+    wanted = [*names, "127.0.0.1", "localhost"]
+    if not (force or new_ca or _needs_regen(cert_path, key_path, names)):
         return new_ca, False
 
     ca, ca_signing_key = _load(ca_cert, ca_key)
@@ -187,7 +185,7 @@ def ensure_cert(cert_path=CERT, key_path=KEY, extra=(), force=False,
         .serial_number(x509.random_serial_number())
         .not_valid_before(now - DAY)
         .not_valid_after(now + datetime.timedelta(days=LEAF_DAYS))
-        .add_extension(x509.SubjectAlternativeName(_sans(names)),
+        .add_extension(x509.SubjectAlternativeName(_sans(wanted)),
                        critical=False)
         .add_extension(x509.BasicConstraints(ca=False, path_length=None),
                        critical=True)
@@ -209,7 +207,7 @@ def ensure_cert(cert_path=CERT, key_path=KEY, extra=(), force=False,
     _write(key_path, _key_bytes(key), private=True)
     _write(cert_path, cert.public_bytes(serialization.Encoding.PEM))
     print(f"[*] signed {cert_path} for:",
-          ", ".join(str(n) for n in dict.fromkeys(names)), flush=True)
+          ", ".join(str(n) for n in dict.fromkeys(wanted)), flush=True)
     return new_ca, True
 
 
@@ -217,8 +215,9 @@ def main(argv=None):
     p = argparse.ArgumentParser(
         prog="python -m filetransfer.certs",
         description="Create the local CA and a server certificate.")
-    p.add_argument("extra", nargs="*", metavar="NAME",
-                   help="extra IP or hostname to put in the SAN")
+    p.add_argument("names", nargs="*", metavar="NAME",
+                   help="name to put in the certificate (default: this"
+                        " machine's .local name)")
     p.add_argument("--force", action="store_true",
                    help="replace certificates that are still valid")
     p.add_argument("--cert", default=CERT)
@@ -226,7 +225,8 @@ def main(argv=None):
     p.add_argument("--ca", default=CA_CERT)
     p.add_argument("--ca-key", dest="ca_key", default=CA_KEY)
     args = p.parse_args(argv)
-    new_ca, new_leaf = ensure_cert(args.cert, args.key, extra=args.extra,
+    names = args.names or [default_name()]
+    new_ca, new_leaf = ensure_cert(args.cert, args.key, names=names,
                                    force=args.force, ca_cert=args.ca,
                                    ca_key=args.ca_key)
     if not (new_ca or new_leaf):

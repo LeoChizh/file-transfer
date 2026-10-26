@@ -1,14 +1,12 @@
-"""Serve under a .local name instead of a bare address.
+"""The .local name this machine is reachable at.
 
-A name is worth more than the best-guessed IP: it survives a new DHCP lease,
-a different Wi-Fi and a VPN, so the certificate that carries it never has to
-be replaced -- and iOS trusts one certificate at a time, so never replacing
-it is the whole game.
+The server has no interest in addresses: it serves one name, that name goes
+in the certificate, and the phone resolves it over mDNS. iOS does that
+natively, and Avahi (Linux) or Bonjour (macOS, Windows) already answer for
+the machine's own hostname, so usually there is nothing to publish and
+nothing to install.
 
-Most systems already answer for their own hostname (Avahi on Linux, Bonjour
-on macOS and Windows), in which case there is nothing to publish and no
-dependency to install. Publishing a different name needs the optional
-`zeroconf` package.
+Publishing some other name needs the optional `zeroconf` package.
 """
 import socket
 
@@ -21,35 +19,67 @@ def default_name(hostname=None):
     return f"{host.lower()}.local"
 
 
-def resolves_to(name, ips):
-    """True if name already answers with one of ips over IPv4."""
+def is_local(ip):
+    """True if ip belongs to this machine.
+
+    Binding is the question asked of the kernel directly: an address this
+    machine does not hold cannot be bound. It beats listing the interfaces,
+    which is what this used to do, and needs no judgement about which of
+    them counts.
+    """
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.bind((ip, 0))
+        return True
+    except OSError:
+        return False
+    finally:
+        s.close()
+
+
+def resolves_here(name):
+    """True if name already resolves to this machine.
+
+    A name that answers with someone else's address is worse than no name:
+    it would hand the phone to a namesake on the same LAN.
+    """
     try:
         answers = {a[4][0] for a in
                    socket.getaddrinfo(name, None, socket.AF_INET)}
     except OSError:
         return False
-    # it has to point at *us*: a stale cache or a namesake on the same LAN
-    # would send the phone to a stranger's machine, which is worse than an IP
-    return bool(answers & set(ips))
+    return any(is_local(ip) for ip in answers)
 
 
-def advertise(name, port, ip):
+def _announce_addresses():
+    """Addresses to put in the mDNS record when publishing a name."""
+    try:
+        info = socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)
+    except OSError:
+        return []
+    return [a[4][0] for a in info if not a[4][0].startswith("127.")]
+
+
+def advertise(name, port):
     """Publish name over mDNS ourselves. Returns a stop callable, or None.
 
-    None means it could not be done -- no zeroconf installed, or something
-    else on the LAN already claims the name.
+    None means it could not be done: no zeroconf installed, no address to
+    announce, or something on the LAN already claims the name.
     """
     try:
-        from zeroconf import (NonUniqueNameException, ServiceInfo, Zeroconf)
+        from zeroconf import NonUniqueNameException, ServiceInfo, Zeroconf
     except ImportError:
         return None
 
+    ips = _announce_addresses()
+    if not ips:
+        return None
     short = name[:-len(".local")] if name.endswith(".local") else name
     info = ServiceInfo(SERVICE, f"{short}.{SERVICE}",
-                       addresses=[socket.inet_aton(ip)], port=port,
-                       server=f"{name}.")
+                       addresses=[socket.inet_aton(ip) for ip in ips],
+                       port=port, server=f"{name}.")
     try:
-        zc = Zeroconf(interfaces=[ip])  # the LAN only, never the tunnel
+        zc = Zeroconf()
     except OSError:
         return None
     try:
@@ -60,15 +90,15 @@ def advertise(name, port, ip):
     return zc.close
 
 
-def ensure_name(name, port, ip, publish=True):
-    """Get a .local name that resolves to ip. Returns (name, stop).
+def ensure_name(name, port, publish=True):
+    """Make name usable. Returns (resolved, stop).
 
-    (None, None) if there is no usable name. stop is None when the system
-    was already answering for it and we published nothing.
+    resolved says whether the phone can be expected to find it; stop is a
+    callable when we published it ourselves, None otherwise.
     """
-    if resolves_to(name, [ip]):
-        return name, None
+    if resolves_here(name):
+        return True, None
     if not publish:
-        return None, None
-    stop = advertise(name, port, ip)
-    return (name, stop) if stop else (None, None)
+        return False, None
+    stop = advertise(name, port)
+    return bool(stop), stop

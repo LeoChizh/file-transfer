@@ -8,8 +8,8 @@ Tiny HTTPS file-drop server. Upload files from an iPhone (Safari) to a Linux or 
 file-transfer/
   filetransfer/
     cli.py         argument parsing, the QR code, what gets printed
+    mdns.py        the .local name, and checking it points here
     server.py      the HTTPS server and its one request handler
-    addresses.py   which address of this machine to advertise
     certs.py       the local CA and the server certificate
     names.py       safe, non-colliding names for uploaded files
     page.py        the upload form and file listing
@@ -59,95 +59,82 @@ python -m filetransfer     # python3 on Linux
 Installing it (`pip install -e .`) also gives a `file-transfer` command that
 works from any directory.
 
-Everything it writes --- `cert.pem`, `key.pem`, `token.txt`, `uploads/` ---
-lands in the current directory, so run it from wherever you want the files.
-Leave it running; stop it with Ctrl-C. Options:
+Everything it writes --- `ca.pem`, `ca-key.pem`, `cert.pem`, `key.pem`,
+`token.txt`, `uploads/` --- lands in the current directory, so run it from
+wherever you want the files. Leave it running; stop it with Ctrl-C.
 
 ```
 --port PORT     port to listen on (default 8443)
 --dir PATH      where files land (default ./uploads)
---host ADDRESS  address for the URL and the certificate, instead of guessing
---cert PATH     --key PATH    --token-file PATH
+--name NAME     the name to serve under (default: this machine's .local name)
+--no-publish    only use the name if something already answers for it
+--cert PATH     --key PATH    --ca PATH    --ca-key PATH    --token-file PATH
 ```
 
-It prints the URL, including the secret token:
-
-```
-[*] https://192.168.35.9:8443/Xk3...Qw/
-[*] saving into /home/user/file-transfer/uploads
-```
-
-The LAN address comes first. If the machine has more than one local address
---- Docker, a second NIC --- the others are listed below it as `or ...`, and
-all of them are in the certificate, so any of them works.
-
-A VPN does not change the URL: the addresses are read off the interfaces, not
-from whichever route happens to win, so a tunnel address never pushes out the
-LAN one. Tunnel addresses are not served at all, and stay out of the
-certificate, because they come and go and every change to the certificate
-means reinstalling it on the phone:
-
-```
-[*] https://192.168.35.9:8443/Xk3...Qw/
-[*] not serving tunnel 10.99.0.2 (keeps the cert stable; FILE_TRANSFER_HOST overrides)
-```
-
-The exception is a machine with nothing else: if every address is a tunnel,
-the tunnel is served after all, so there is still a URL. To pick the address
-by hand --- including a tunnel that was skipped:
-
-```sh
-python -m filetransfer --host 192.168.35.9    # or $FILE_TRANSFER_HOST
-```
-
-A QR code of the URL is drawn above it: scan it with the iPhone camera instead of typing the token. (Needs the `qrcode` package; without it only the URL is printed.)
-
-Open exactly that URL. Anything without the token returns 404, for uploads and downloads alike. The token is regenerated on every start, so old URLs and bookmarks stop working after a restart; scan the new QR code. `token.txt` just holds the current one.
-
-## Upload from iPhone
-
-1. Connect to the same Wi-Fi as the server.
-2. In Safari, open the URL printed on startup.
-3. Cert warning: **Show Details** → **visit this website** (once per device).
-4. Pick one or more files → **Upload**. They appear in `uploads/`.
-
-## The .local name
-
-If something on the machine already answers mDNS for its hostname --- Avahi
-on Linux, Bonjour on macOS and Windows do, out of the box --- the URL uses
-that name instead of an address:
+It prints one URL, a QR code of it, and the secret token it contains:
 
 ```
 [*] https://your-pc.local:8443/Xk3...Qw/
-[*] or https://192.168.35.9:8443/Xk3...Qw/   (certificate warning)
+[*] first time on this phone? install https://your-pc.local:8443/Xk3...Qw/ca.pem
+[*] saving into /home/user/file-transfer/uploads
 ```
 
-iOS resolves `.local` natively, so the phone needs nothing installed. The
-name is only used when it already resolves to one of this machine's
-addresses; a stale cache or a namesake on the LAN would otherwise send the
-phone to a stranger's machine.
+### No addresses, by design
 
-A name also survives a change of address, so the URL and the QR code stay
-the same across reboots and new leases. The address URL is printed as a
-fallback and is equally trusted --- both are in the certificate.
+The URL is always a name, never an IP address. Addresses change --- new
+Wi-Fi, a new DHCP lease, a VPN coming up --- and picking the right one out of
+a machine's several is a guessing game that gets it wrong exactly when a VPN
+is connected. A name does not have that problem: it is stable, it is what
+goes in the certificate, and iOS resolves `.local` natively, so the phone
+needs nothing installed to find it.
+
+The tradeoff is real and worth knowing: **mDNS rides on multicast, and some
+networks block it** --- guest Wi-Fi, client isolation, a few mesh routers. On
+such a network there is no fallback and no way in. `localhost` and
+`127.0.0.1` are always in the certificate, so the machine can always reach
+itself, but that does not help the phone.
+
+If the name does not resolve, the startup output says so rather than looking
+like success:
 
 ```
---name NAME   serve as NAME.local instead of the hostname
---no-mdns     ignore names, use addresses as before
+[!] nothing answers for your-pc.local here, so the phone probably cannot
+    reach it either: install the mdns extra to publish it, or pass --name
 ```
 
-Publishing a *different* name needs the optional dependency:
+Avahi (Linux) and Bonjour (macOS, Windows) already answer for the machine's
+own hostname, which is the usual case and needs nothing installed.
+Publishing some *other* name needs the optional dependency:
 
 ```sh
 pip install -e ".[mdns]"      # brings in zeroconf
 python -m filetransfer --name filedrop
 ```
 
-mDNS rides on multicast, which guest Wi-Fi and client-isolated networks
-block. That is what the address fallback is for.
+`--name` also takes a name from somewhere else entirely --- a static entry
+on the router, say, or a hosts file --- in which case nothing has to be
+published at all:
+
+```sh
+python -m filetransfer --name nas.lan --no-publish
+```
+
+A name is only used once it has been checked to resolve to *this* machine,
+by asking the kernel to bind the address it resolves to. An address this
+machine does not hold cannot be bound, so a namesake on the same LAN cannot
+quietly capture the phone.
 
 The server listens on IPv4 and IPv6 on one socket, because a `.local` name
 usually carries a link-local IPv6 record as well and iOS may try it first.
+
+## Upload from iPhone
+
+1. Connect to the same Wi-Fi as the server.
+2. In Safari, open the URL printed on startup, or scan the QR code.
+3. First time only: warning → **Show Details** → **visit this website**, then
+   **Install the certificate** on the page (see
+   [Certificate](#certificate)). After that there are no warnings.
+4. Pick one or more files → **Upload**. They appear in `uploads/`.
 
 ## Certificate
 
@@ -203,7 +190,7 @@ again. Leave it off to just re-sign the server certificate.
 python -m unittest discover -v
 ```
 
-One test file per module: `test_addresses.py`, `test_certs.py`,
+One test file per module: `test_mdns.py`, `test_certs.py`,
 `test_server.py`, `test_cli.py`. The server tests start a real server on a
 random port --- the upload folder and the token are constructor arguments,
 so nothing has to be monkeypatched.
@@ -216,7 +203,7 @@ They also run on Linux and Windows via GitHub Actions (`.github/workflows/test.y
 - Filenames are reduced to their base name and stripped of characters Windows forbids; `../../etc/passwd` lands as `passwd` in `uploads/`.
 - A name that already exists gets a suffix: `IMG_0001 (1).jpg`.
 - Requests are handled in threads, so a stalled phone does not block others.
-- Bound to `0.0.0.0:8443`. The token is the only protection (traffic is encrypted), so do not expose this to the internet.
+- Bound to every interface on port 8443, IPv4 and IPv6. The token is the only protection (traffic is encrypted), so do not expose this to the internet.
 
 ### Firewall
 
@@ -242,4 +229,10 @@ it lacked the `extendedKeyUsage` extension iOS requires and was never
 actually trusted.
 
 **Cannot reach the page**
-Check the IP printed on startup, the firewall, and that both devices are on the same subnet. If the machine has several addresses, try the other `or ...` URLs, or pin the right one with `FILE_TRANSFER_HOST`. To reach the server *over* a VPN, pass its tunnel address that way --- it is skipped by default, and doing so rewrites the certificate. A VPN on the *iPhone* can also route the request away from the LAN --- turn it off there, or exclude the subnet.
+First check the firewall and that both devices are on the same Wi-Fi. Then
+check the name resolves from the phone at all: if the network blocks
+multicast, `.local` will not work and there is no fallback --- see
+[No addresses, by design](#no-addresses-by-design). A VPN on the *phone* can
+also route the request away from the LAN; turn it off there. If the startup
+output carried the `[!] nothing answers for ...` line, the name was already
+known to be unusable. A VPN on the *iPhone* can also route the request away from the LAN --- turn it off there, or exclude the subnet.
