@@ -18,12 +18,19 @@ TEMPLATE = """<!doctype html>
   <button type="submit">Upload</button>
 </form>
 <hr>
+__CA__
 <h3>Files</h3>
 <ul>__LISTING__</ul>
 </body></html>"""
 
+CA_BLOCK = """<p><a href="ca.pem">Install the certificate</a> once to stop
+the warnings: open the link, allow the profile, then Settings &rarr;
+General &rarr; VPN &amp; Device Management to install it, and Settings
+&rarr; General &rarr; About &rarr; Certificate Trust Settings to turn it
+on.</p>"""
 
-def render(names):
+
+def render(names, ca=False):
     """The page listing these file names, as bytes ready to write."""
     if names:
         listing = "".join(
@@ -32,4 +39,5 @@ def render(names):
         )
     else:
         listing = "<li><em>empty</em></li>"
-    return TEMPLATE.replace("__LISTING__", listing).encode("utf-8")
+    body = TEMPLATE.replace("__LISTING__", listing)
+    return body.replace("__CA__", CA_BLOCK if ca else "").encode("utf-8")

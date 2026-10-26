@@ -9,6 +9,8 @@ dist/
 # secrets / generated
 cert.pem
 key.pem
+ca.pem
+ca-key.pem
 
 # uploaded files
 uploads/*

@@ -2,6 +2,7 @@
 import functools
 import hmac
 import os
+import socket
 import ssl
 import urllib.parse
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -13,6 +14,9 @@ from .names import clean_name, unique_path
 
 DEFAULT_PORT = 8443
 HIDDEN = {".gitkeep"}
+CA_PATH = "/ca.pem"
+# iOS only offers to install a certificate served with this type
+CA_TYPE = "application/x-x509-ca-cert"
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -24,9 +28,10 @@ class Handler(SimpleHTTPRequestHandler):
     because it handles the whole request inside __init__.
     """
 
-    def __init__(self, *args, upload_dir, token, **kwargs):
+    def __init__(self, *args, upload_dir, token, ca_cert=None, **kwargs):
         self.upload_dir = upload_dir
         self.token = token
+        self.ca_cert = ca_cert
         super().__init__(*args, directory=upload_dir, **kwargs)
 
     def _route(self):
@@ -82,6 +87,9 @@ class Handler(SimpleHTTPRequestHandler):
         if inner is None:
             self.send_error(404)
             return
+        if inner == CA_PATH and self.ca_cert:
+            self._send_ca(head)
+            return
         if inner != "/":
             self.path = inner  # the base class resolves it inside upload_dir
             if head:
@@ -96,7 +104,7 @@ class Handler(SimpleHTTPRequestHandler):
             return
         names = [f for f in sorted(os.listdir(self.upload_dir))
                  if f not in HIDDEN]
-        body = page.render(names)
+        body = page.render(names, ca=bool(self.ca_cert))
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
@@ -105,20 +113,61 @@ class Handler(SimpleHTTPRequestHandler):
             self.wfile.write(body)
 
 
-def make_handler(upload_dir, token):
-    """A handler class bound to this folder and secret."""
-    return functools.partial(Handler, upload_dir=upload_dir, token=token)
+    def _send_ca(self, head):
+        """The authority, so the phone can install it from this page."""
+        try:
+            with open(self.ca_cert, "rb") as fh:
+                body = fh.read()
+        except OSError:
+            self.send_error(404)
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", CA_TYPE)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        if not head:
+            self.wfile.write(body)
+
+
+def make_handler(upload_dir, token, ca_cert=None):
+    """A handler class bound to this folder, secret and authority."""
+    return functools.partial(Handler, upload_dir=upload_dir, token=token,
+                             ca_cert=ca_cert)
+
+
+class DualStackServer(ThreadingHTTPServer):
+    """Accepts IPv4 and IPv6 on one socket.
+
+    A .local name usually carries a link-local AAAA record as well as the A
+    record, and iOS may try the AAAA first. An IPv4-only socket leaves that
+    to Happy Eyeballs falling back, so listen on both.
+    """
+
+    address_family = socket.AF_INET6
+
+    def server_bind(self):
+        self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+        super().server_bind()
 
 
 def make_server(upload_dir, token, port=DEFAULT_PORT, cert=None, key=None,
-                host="0.0.0.0"):
+                host=None, ca_cert=None):
     """A server listening on every interface, wrapped in TLS if a cert given.
 
-    The caller owns serve_forever(), so a test can drive it in a thread.
+    host=None means both address families; pass one to pin it. The caller
+    owns serve_forever(), so a test can drive it in a thread.
     """
-    httpd = ThreadingHTTPServer((host, port), make_handler(upload_dir, token))
-    if cert:
-        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        ctx.load_cert_chain(certfile=cert, keyfile=key)
-        httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
-    return httpd
+    def build(cls, bind):
+        httpd = cls((bind, port), make_handler(upload_dir, token, ca_cert))
+        if cert:
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            ctx.load_cert_chain(certfile=cert, keyfile=key)
+            httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
+        return httpd
+
+    if host is not None:
+        return build(ThreadingHTTPServer, host)
+    try:
+        return build(DualStackServer, "::")
+    except OSError:  # no IPv6 on this machine
+        return build(ThreadingHTTPServer, "0.0.0.0")
