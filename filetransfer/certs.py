@@ -9,7 +9,9 @@ So there are two certificates, the way mkcert does it:
 
   ca.pem    the authority. This is the one installed on the phone, and it
             never changes, which is the point -- trust it once and every
-            certificate below it is trusted too.
+            certificate below it is trusted too. It is named after the
+            machine and the day it was made, so it can be recognised in the
+            phone's trust settings.
   cert.pem  the server certificate, signed by the CA. Regenerated whenever
             the names change, which costs the phone nothing.
 
@@ -19,6 +21,7 @@ import argparse
 import datetime
 import ipaddress
 import os
+import socket
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
@@ -39,6 +42,21 @@ DAY = datetime.timedelta(days=1)
 
 def _now():
     return datetime.datetime.now(datetime.timezone.utc)
+
+
+def ca_name(hostname=None, when=None):
+    """What the authority is called in the phone's trust settings.
+
+    The machine and the day it was made, because that list shows the common
+    name and nothing else: several machines, or one machine's old authority
+    still sitting there, are otherwise impossible to tell apart.
+    """
+    day = (when or _now()).strftime("%Y-%m-%d")
+    suffix = f" file-transfer CA {day}"
+    host = (hostname or socket.gethostname()).split(".")[0]
+    # the common name holds 64 characters; the date is worth more than the
+    # tail of a long hostname, so that is what gives way
+    return host[:64 - len(suffix)] + suffix
 
 
 def _write(path, data, private=False):
@@ -87,11 +105,12 @@ def ensure_ca(ca_cert=CA_CERT, ca_key=CA_KEY, force=False):
             pass  # unreadable: make a new one
 
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    now = _now()
+    common_name = ca_name(when=now)
     name = x509.Name([
-        x509.NameAttribute(NameOID.COMMON_NAME, "file-transfer local CA"),
+        x509.NameAttribute(NameOID.COMMON_NAME, common_name),
         x509.NameAttribute(NameOID.ORGANIZATION_NAME, "file-transfer"),
     ])
-    now = _now()
     cert = (
         x509.CertificateBuilder()
         .subject_name(name)
@@ -113,8 +132,8 @@ def ensure_ca(ca_cert=CA_CERT, ca_key=CA_KEY, force=False):
     )
     _write(ca_key, _key_bytes(key), private=True)
     _write(ca_cert, cert.public_bytes(serialization.Encoding.PEM))
-    print(f"[*] generated {ca_cert}: install this one on the phone",
-          flush=True)
+    print(f'[*] generated {ca_cert} as "{common_name}":'
+          " install this one on the phone", flush=True)
     return True
 
 

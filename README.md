@@ -145,6 +145,13 @@ There are two certificates, the way `mkcert` does it:
 | `ca.pem` | the local authority. **This is the one the phone installs.** | ~never (10 years) |
 | `cert.pem` | the server certificate, signed by the CA | whenever a name or address changes |
 
+The authority is named after the machine and the day it was made, for
+example `your-pc file-transfer CA 2026-10-26`. That is the only thing the
+phone's Certificate Trust Settings shows, so it is what lets you tell one
+machine's authority from another's --- or from an old one of your own that
+is still sitting in the list. The name records when it was made, so it does
+not change from one day to the next.
+
 That split is the whole point. The phone trusts the authority, so the server
 certificate underneath can be re-signed as often as it likes --- new Wi-Fi,
 new DHCP lease, VPN up or down --- and the phone never has to be touched

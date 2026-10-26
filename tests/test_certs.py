@@ -95,6 +95,34 @@ class WhatTheIphoneChecksTest(CertTest):
         self.assertTrue(ext(self.ca, x509.KeyUsage).value.key_cert_sign)
 
 
+class CaNameTest(unittest.TestCase):
+    """The phone's trust settings show the common name and nothing else."""
+
+    WHEN = datetime.datetime(2026, 10, 26, tzinfo=datetime.timezone.utc)
+
+    def test_machine_and_day(self):
+        self.assertEqual(certs.ca_name("my-pc", self.WHEN),
+                         "my-pc file-transfer CA 2026-10-26")
+
+    def test_domain_is_dropped(self):
+        self.assertTrue(
+            certs.ca_name("my-pc.lan", self.WHEN).startswith("my-pc "))
+
+    def test_long_hostname_keeps_the_date(self):
+        name = certs.ca_name("h" * 80, self.WHEN)
+        self.assertEqual(len(name), 64)
+        self.assertTrue(name.endswith("file-transfer CA 2026-10-26"))
+
+    def test_it_is_what_goes_in_the_certificate(self):
+        with tempfile.TemporaryDirectory() as d:
+            ca = os.path.join(d, "ca.pem")
+            certs.ensure_ca(ca, os.path.join(d, "ca-key.pem"))
+            cn = load(ca).subject.get_attributes_for_oid(
+                x509.oid.NameOID.COMMON_NAME)[0].value
+        self.assertEqual(cn, certs.ca_name())
+        self.assertIn("file-transfer CA", cn)
+
+
 class StabilityTest(CertTest):
     """The phone trusts the CA, so only the CA changing costs anything."""
 
@@ -119,6 +147,16 @@ class StabilityTest(CertTest):
         self.ensure()
         self.assertEqual(san_ips(self.cert), ["127.0.0.1"])
         self.assertEqual(self.ensure(), (False, False))
+
+    def test_a_new_day_does_not_replace_the_authority(self):
+        """Its name records when it was made, not what day it is."""
+        self.ensure()
+        before = digest(self.ca)
+        later = datetime.datetime.now(datetime.timezone.utc) + \
+            datetime.timedelta(days=200)
+        with mock.patch.object(certs, "_now", return_value=later):
+            self.assertEqual(self.ensure(), (False, False))
+        self.assertEqual(digest(self.ca), before)
 
     def test_losing_the_ca_rebuilds_the_chain(self):
         self.ensure()
