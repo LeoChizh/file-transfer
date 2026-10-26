@@ -6,14 +6,21 @@ Tiny HTTPS file-drop server. Upload files from an iPhone (Safari) to a Linux or 
 
 ```
 file-transfer/
-  recv.py        the server
-  gen_cert.py    makes cert.pem / key.pem (cross-platform)
-  cert.pem       self-signed cert (created automatically)
-  key.pem        cert key (created automatically)
-  token.txt      current secret used in the URL (rewritten on every start)
-  uploads/       files land here
-  tests/         unit tests
-  .venv/         python venv
+  filetransfer/
+    cli.py         argument parsing, the QR code, what gets printed
+    server.py      the HTTPS server and its one request handler
+    addresses.py   which address of this machine to advertise
+    certs.py       makes cert.pem / key.pem (cross-platform)
+    names.py       safe, non-colliding names for uploaded files
+    page.py        the upload form and file listing
+    tokens.py      the shared secret in every URL
+  pyproject.toml   installable, provides the `file-transfer` command
+  cert.pem         self-signed cert (created automatically)
+  key.pem          cert key (created automatically)
+  token.txt        current secret used in the URL (rewritten on every start)
+  uploads/         files land here
+  tests/           unit tests
+  .venv/           python venv
 ```
 
 ## Setup
@@ -21,7 +28,8 @@ file-transfer/
 **Linux / macOS**
 
 ```sh
-cd ~/file-transfer
+git clone https://github.com/LeoChizh/file-transfer.git
+cd file-transfer
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
@@ -30,16 +38,34 @@ pip install -r requirements.txt
 **Windows (PowerShell)**
 
 ```powershell
+git clone https://github.com/LeoChizh/file-transfer.git
 cd file-transfer
 py -m venv .venv
 .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 ```
 
+That is all the setup there is. The first run creates the certificate, the
+key, the token and the upload folder; there is nothing to configure.
+
 ## Run
 
 ```sh
-python recv.py        # python3 on Linux
+python -m filetransfer     # python3 on Linux
+```
+
+Installing it (`pip install -e .`) also gives a `file-transfer` command that
+works from any directory.
+
+Everything it writes --- `cert.pem`, `key.pem`, `token.txt`, `uploads/` ---
+lands in the current directory, so run it from wherever you want the files.
+Leave it running; stop it with Ctrl-C. Options:
+
+```
+--port PORT     port to listen on (default 8443)
+--dir PATH      where files land (default ./uploads)
+--host ADDRESS  address for the URL and the certificate, instead of guessing
+--cert PATH     --key PATH    --token-file PATH
 ```
 
 It prints the URL, including the secret token:
@@ -69,7 +95,7 @@ the tunnel is served after all, so there is still a URL. To pick the address
 by hand --- including a tunnel that was skipped:
 
 ```sh
-FILE_TRANSFER_HOST=192.168.35.9 python recv.py
+python -m filetransfer --host 192.168.35.9    # or $FILE_TRANSFER_HOST
 ```
 
 A QR code of the URL is drawn above it: scan it with the iPhone camera instead of typing the token. (Needs the `qrcode` package; without it only the URL is printed.)
@@ -85,14 +111,14 @@ Open exactly that URL. Anything without the token returns 404, for uploads and d
 
 ## Certificate
 
-`recv.py` creates the certificate automatically if it is missing, so running `gen_cert.py` by hand is optional.
+The server creates the certificate automatically if it is missing, so making one by hand is optional.
 
 It is **not** regenerated on every start: iOS trusts one specific certificate, so that would force a reinstall on the phone each time. A new one is made only when the cert is missing, expires within 30 days, or no longer covers one of this machine's LAN addresses. Connecting or dropping a VPN does **not** count: tunnel addresses are deliberately left out, so the certificate on the phone keeps working either way. A warning is printed when a new one is made.
 
 Every served address goes into the certificate's `subjectAltName`, which iOS requires. To add a hostname or force a new cert:
 
 ```sh
-python gen_cert.py --force my-pc.local
+python -m filetransfer.certs --force my-pc.local
 ```
 
 ## Tests
@@ -100,6 +126,11 @@ python gen_cert.py --force my-pc.local
 ```sh
 python -m unittest discover -v
 ```
+
+One test file per module: `test_addresses.py`, `test_certs.py`,
+`test_server.py`, `test_cli.py`. The server tests start a real server on a
+random port --- the upload folder and the token are constructor arguments,
+so nothing has to be monkeypatched.
 
 They also run on Linux and Windows via GitHub Actions (`.github/workflows/test.yml`).
 
@@ -123,8 +154,8 @@ They also run on Linux and Windows via GitHub Actions (`.github/workflows/test.y
 
 ## Troubleshooting
 
-**`ModuleNotFoundError: multipart`**
-Activate the venv and run `pip install -r requirements.txt`. Do **not** install `python-multipart`; it uses the same module name and conflicts.
+**`ModuleNotFoundError: multipart`** (or `filetransfer`)
+Activate the venv and run `pip install -r requirements.txt`, from the project directory. Do **not** install `python-multipart`; it uses the same module name and conflicts.
 
 **Cert warning keeps blocking upload**
 Install `cert.pem` on the iPhone once (AirDrop or email it, then open it):
